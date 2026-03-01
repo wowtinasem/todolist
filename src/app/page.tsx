@@ -1,12 +1,28 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Todo, FilterStatus } from "@/types/todo";
+import { readTodos, writeTodos } from "@/lib/storage";
 import SearchBar from "@/components/SearchBar";
 import FilterBar from "@/components/FilterBar";
 import TodoList from "@/components/TodoList";
 import TodoForm from "@/components/TodoForm";
 import { Plus } from "lucide-react";
+
+const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+function sortTodos(todos: Todo[]): Todo[] {
+  return [...todos].sort((a, b) => {
+    if (a.completed !== b.completed) return a.completed ? 1 : -1;
+    const pa = PRIORITY_ORDER[a.priority] ?? 1;
+    const pb = PRIORITY_ORDER[b.priority] ?? 1;
+    if (pa !== pb) return pa - pb;
+    if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+}
 
 export default function Home() {
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -18,70 +34,106 @@ export default function Home() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
   const [loading, setLoading] = useState(true);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const fetchTodos = useCallback(async () => {
-    const params = new URLSearchParams();
-    if (statusFilter !== "all") params.set("status", statusFilter);
-    if (categoryFilter) params.set("category", categoryFilter);
-    if (priorityFilter) params.set("priority", priorityFilter);
-    if (search) params.set("search", search);
-
-    const res = await fetch(`/api/todos?${params.toString()}`);
-    const data = await res.json();
+  const loadData = useCallback(() => {
+    const data = readTodos();
     setTodos(data.todos);
     setCategories(data.categories);
     setLoading(false);
-  }, [statusFilter, categoryFilter, priorityFilter, search]);
+  }, []);
 
   useEffect(() => {
-    fetchTodos();
-  }, [fetchTodos]);
+    loadData();
+  }, [loadData]);
 
-  const handleSearchChange = (value: string) => {
-    setSearch(value);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      setSearch(value);
-    }, 300);
-  };
+  const filteredTodos = useMemo(() => {
+    let result = todos;
 
-  const handleAdd = async (data: Partial<Todo>) => {
-    await fetch("/api/todos", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
+    if (statusFilter === "active") {
+      result = result.filter((t) => !t.completed);
+    } else if (statusFilter === "completed") {
+      result = result.filter((t) => t.completed);
+    }
+
+    if (categoryFilter) {
+      result = result.filter((t) => t.category === categoryFilter);
+    }
+
+    if (priorityFilter) {
+      result = result.filter((t) => t.priority === priorityFilter);
+    }
+
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter(
+        (t) =>
+          t.title.toLowerCase().includes(q) ||
+          t.description.toLowerCase().includes(q)
+      );
+    }
+
+    return sortTodos(result);
+  }, [todos, statusFilter, categoryFilter, priorityFilter, search]);
+
+  const saveData = useCallback(
+    (newTodos: Todo[], newCategories?: string[]) => {
+      const cats = newCategories ?? categories;
+      writeTodos({ todos: newTodos, categories: cats });
+      setTodos(newTodos);
+      if (newCategories) setCategories(newCategories);
+    },
+    [categories]
+  );
+
+  const handleAdd = (data: Partial<Todo>) => {
+    const newTodo: Todo = {
+      id: crypto.randomUUID(),
+      title: data.title || "",
+      description: data.description || "",
+      category: data.category || "기타",
+      priority: data.priority || "medium",
+      dueDate: data.dueDate || null,
+      completed: false,
+      createdAt: new Date().toISOString(),
+    };
+    const newTodos = [...todos, newTodo];
+
+    // Add new category if it doesn't exist
+    let newCategories: string[] | undefined;
+    if (newTodo.category && !categories.includes(newTodo.category)) {
+      newCategories = [...categories, newTodo.category];
+    }
+
+    saveData(newTodos, newCategories);
     setIsFormOpen(false);
-    fetchTodos();
   };
 
-  const handleUpdate = async (data: Partial<Todo>) => {
+  const handleUpdate = (data: Partial<Todo>) => {
     if (!editingTodo) return;
-    await fetch(`/api/todos/${editingTodo.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
+    const newTodos = todos.map((t) =>
+      t.id === editingTodo.id ? { ...t, ...data } : t
+    );
+
+    let newCategories: string[] | undefined;
+    if (data.category && !categories.includes(data.category)) {
+      newCategories = [...categories, data.category];
+    }
+
+    saveData(newTodos, newCategories);
     setEditingTodo(null);
     setIsFormOpen(false);
-    fetchTodos();
   };
 
-  const handleDelete = async (id: string) => {
-    await fetch(`/api/todos/${id}`, { method: "DELETE" });
-    fetchTodos();
+  const handleDelete = (id: string) => {
+    const newTodos = todos.filter((t) => t.id !== id);
+    saveData(newTodos);
   };
 
-  const handleToggle = async (id: string) => {
-    const todo = todos.find((t) => t.id === id);
-    if (!todo) return;
-    await fetch(`/api/todos/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ completed: !todo.completed }),
-    });
-    fetchTodos();
+  const handleToggle = (id: string) => {
+    const newTodos = todos.map((t) =>
+      t.id === id ? { ...t, completed: !t.completed } : t
+    );
+    saveData(newTodos);
   };
 
   const openEditForm = (todo: Todo) => {
@@ -118,7 +170,7 @@ export default function Home() {
       {/* Main */}
       <main className="mx-auto max-w-3xl px-4 py-6">
         <div className="space-y-5">
-          <SearchBar value={search} onChange={handleSearchChange} />
+          <SearchBar value={search} onChange={setSearch} />
 
           <FilterBar
             statusFilter={statusFilter}
@@ -131,7 +183,7 @@ export default function Home() {
           />
 
           <TodoList
-            todos={todos}
+            todos={filteredTodos}
             loading={loading}
             onToggle={handleToggle}
             onEdit={openEditForm}
