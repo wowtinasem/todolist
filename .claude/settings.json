@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/project//**)",
+      "Read(//c/project/**)",
+      "Bash(npm run build:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)"
+    ],
+    "additionalDirectories": [
+      "C:\\project\\todolist\\src\\app\\api\\todos"
+    ]
+  }
+}
