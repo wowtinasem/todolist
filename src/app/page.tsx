@@ -2,7 +2,16 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Todo, FilterStatus } from "@/types/todo";
-import { readTodos, writeTodos } from "@/lib/storage";
+import { useAuth } from "@/contexts/AuthContext";
+import {
+  fetchTodos,
+  createTodo,
+  updateTodo,
+  deleteTodo,
+  toggleTodo,
+} from "@/lib/api";
+import LoginPage from "@/components/LoginPage";
+import UserMenu from "@/components/UserMenu";
 import SearchBar from "@/components/SearchBar";
 import FilterBar from "@/components/FilterBar";
 import TodoList from "@/components/TodoList";
@@ -25,6 +34,7 @@ function sortTodos(todos: Todo[]): Todo[] {
 }
 
 export default function Home() {
+  const { user, loading: authLoading } = useAuth();
   const [todos, setTodos] = useState<Todo[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [search, setSearch] = useState("");
@@ -35,16 +45,25 @@ export default function Home() {
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadData = useCallback(() => {
-    const data = readTodos();
-    setTodos(data.todos);
-    setCategories(data.categories);
-    setLoading(false);
-  }, []);
+  const loadData = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const data = await fetchTodos(user.email);
+      setTodos(data.todos);
+      setCategories(data.categories);
+    } catch (err) {
+      console.error("Failed to load todos:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (user) {
+      loadData();
+    }
+  }, [user, loadData]);
 
   const filteredTodos = useMemo(() => {
     let result = todos;
@@ -75,65 +94,69 @@ export default function Home() {
     return sortTodos(result);
   }, [todos, statusFilter, categoryFilter, priorityFilter, search]);
 
-  const saveData = useCallback(
-    (newTodos: Todo[], newCategories?: string[]) => {
-      const cats = newCategories ?? categories;
-      writeTodos({ todos: newTodos, categories: cats });
-      setTodos(newTodos);
-      if (newCategories) setCategories(newCategories);
-    },
-    [categories]
-  );
-
-  const handleAdd = (data: Partial<Todo>) => {
-    const newTodo: Todo = {
-      id: crypto.randomUUID(),
-      title: data.title || "",
-      description: data.description || "",
-      category: data.category || "기타",
-      priority: data.priority || "medium",
-      dueDate: data.dueDate || null,
-      completed: false,
-      createdAt: new Date().toISOString(),
-    };
-    const newTodos = [...todos, newTodo];
-
-    // Add new category if it doesn't exist
-    let newCategories: string[] | undefined;
-    if (newTodo.category && !categories.includes(newTodo.category)) {
-      newCategories = [...categories, newTodo.category];
+  const handleAdd = async (data: Partial<Todo>) => {
+    if (!user) return;
+    try {
+      const newTodo = await createTodo(user.email, {
+        title: data.title || "",
+        description: data.description || "",
+        category: data.category || "기타",
+        priority: data.priority || "medium",
+        dueDate: data.dueDate || null,
+      });
+      setTodos((prev) => [...prev, newTodo]);
+      if (newTodo.category && !categories.includes(newTodo.category)) {
+        setCategories((prev) => [...prev, newTodo.category]);
+      }
+      setIsFormOpen(false);
+    } catch (err) {
+      console.error("Failed to create todo:", err);
     }
-
-    saveData(newTodos, newCategories);
-    setIsFormOpen(false);
   };
 
-  const handleUpdate = (data: Partial<Todo>) => {
-    if (!editingTodo) return;
-    const newTodos = todos.map((t) =>
-      t.id === editingTodo.id ? { ...t, ...data } : t
-    );
-
-    let newCategories: string[] | undefined;
-    if (data.category && !categories.includes(data.category)) {
-      newCategories = [...categories, data.category];
+  const handleUpdate = async (data: Partial<Todo>) => {
+    if (!user || !editingTodo) return;
+    try {
+      const updated = await updateTodo(user.email, editingTodo.id, data);
+      setTodos((prev) =>
+        prev.map((t) => (t.id === editingTodo.id ? updated : t))
+      );
+      if (updated.category && !categories.includes(updated.category)) {
+        setCategories((prev) => [...prev, updated.category]);
+      }
+      setEditingTodo(null);
+      setIsFormOpen(false);
+    } catch (err) {
+      console.error("Failed to update todo:", err);
     }
-
-    saveData(newTodos, newCategories);
-    setEditingTodo(null);
-    setIsFormOpen(false);
   };
 
-  const handleDelete = (id: string) => {
-    const newTodos = todos.filter((t) => t.id !== id);
-    saveData(newTodos);
+  const handleDelete = async (id: string) => {
+    if (!user) return;
+    const prev = todos;
+    setTodos((t) => t.filter((item) => item.id !== id));
+    try {
+      await deleteTodo(user.email, id);
+    } catch (err) {
+      console.error("Failed to delete todo:", err);
+      setTodos(prev);
+    }
   };
 
-  const handleToggle = (id: string) => {
-    const newTodos = todos.map((t) =>
-      t.id === id ? { ...t, completed: !t.completed } : t
+  const handleToggle = async (id: string) => {
+    if (!user) return;
+    const prev = todos;
+    setTodos((t) =>
+      t.map((item) =>
+        item.id === id ? { ...item, completed: !item.completed } : item
+      )
     );
-    saveData(newTodos);
+    try {
+      await toggleTodo(user.email, id);
+    } catch (err) {
+      console.error("Failed to toggle todo:", err);
+      setTodos(prev);
+    }
   };
 
   const openEditForm = (todo: Todo) => {
@@ -151,19 +174,34 @@ export default function Home() {
     setEditingTodo(null);
   };
 
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginPage />;
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-4">
           <h1 className="text-xl font-bold text-slate-900">할 일 관리</h1>
-          <button
-            onClick={openAddForm}
-            className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" />
-            추가
-          </button>
+          <div className="flex items-center gap-3">
+            <UserMenu />
+            <button
+              onClick={openAddForm}
+              className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" />
+              추가
+            </button>
+          </div>
         </div>
       </header>
 

@@ -1,0 +1,5 @@
+android-build/
+data/
+*.apk
+*.zip
+*.keystore
